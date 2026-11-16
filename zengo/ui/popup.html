@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Zengo Popup</title>
+<link rel="stylesheet" href="zengo.css">
+<style>
+body { display: flex; flex-direction: column; }
+header {
+  display: flex; align-items: center; gap: 4px; padding: 6px 6px 6px 14px; flex: none; cursor: move;
+  background: var(--rail); color: var(--rail-ink); user-select: none;
+}
+.logo { height: 15px; width: auto; display: block; margin-right: 6px; pointer-events: none; }
+header .pill { background: var(--rail-hover); color: var(--rail-ink); }
+header .ibtn { color: var(--rail-ink); }
+header .ibtn:hover { background: var(--rail-hover); color: var(--rail-strong); }
+header .ibtn.on { background: var(--rail-hover); color: var(--accent); }
+main { flex: 1; overflow-y: auto; padding: 12px 16px 18px; }
+</style>
+</head>
+<body>
+<header class="pywebview-drag-region">
+  <img class="logo pywebview-drag-region" src="logo.png" alt="禅語" draggable="false">
+  <span class="pill pywebview-drag-region" data-dir>…</span>
+  <span class="spacer pywebview-drag-region"></span>
+  <button class="ibtn" id="furi" title="Show or hide furigana" aria-label="Show or hide furigana">ふ</button>
+  <button class="ibtn" id="open" title="Open in the Zengo window" aria-label="Open in the Zengo window"></button>
+  <button class="ibtn" id="pin" title="Keep open when clicking away" aria-label="Keep open when clicking away"></button>
+  <button class="ibtn" id="close" title="Close (Esc)" aria-label="Close"></button>
+</header>
+<main id="main"><div id="result"></div></main>
+<script src="components.js"></script>
+<script>
+"use strict";
+$("open").append(icon("expand"));
+$("pin").append(icon("pin"));
+$("close").append(icon("close"));
+
+function needsKey() { api("open_in_app", "", "settings"); }
+const view = new ResultView($("result"), { win: "popup", compact: true, onNeedsKey: needsKey });
+
+function paintPrefs() {
+  $("furi").classList.toggle("on", !!Config.furigana);
+  $("pin").classList.toggle("on", !!Config.popup_pinned);
+  document.body.classList.toggle("nofuri", !Config.furigana);
+  applyTheme(Config.theme);
+}
+
+zengo.onConfig = (c) => { Object.assign(Config, c); paintPrefs(); };
+zengo.show = ({ text }) => {
+  $("main").scrollTop = 0;
+  view.load(text, { record: true });
+  window.focus();
+};
+
+$("close").onclick = () => api("popup_hide");
+$("open").onclick = () => api("open_in_app", view.text || "");
+$("pin").onclick = () => { Config.popup_pinned = !Config.popup_pinned; paintPrefs(); api("set_pref", "popup_pinned", Config.popup_pinned); };
+$("furi").onclick = () => { Config.furigana = !Config.furigana; paintPrefs(); api("set_pref", "furigana", Config.furigana); };
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") api("popup_hide"); });
+window.addEventListener("blur", () => api("popup_blur"));
+
+(async () => {
+  Object.assign(Config, await api("settings_get"));
+  paintPrefs();
+  Saved.refresh();
+})();
+</script>
+</body>
+</html>

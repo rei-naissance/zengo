@@ -1,0 +1,9 @@
+# Tested versions (Windows 11, Python 3.11-3.13). pythonnet comes in via pywebview.
+pywebview==6.2.1
+pystray==0.19.5
+pillow==13.0.0
+pynput==1.8.2
+fugashi==1.5.2
+unidic-lite==1.0.8
+deepl==1.33.0
+python-dotenv==1.2.4
