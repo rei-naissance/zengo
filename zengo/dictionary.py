@@ -8,7 +8,29 @@ import threading
 from functools import lru_cache
 from pathlib import Path
 
+from . import DICT_SCHEMA
+
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "zengo.db"
+
+
+class DictionaryError(RuntimeError):
+    pass
+
+
+def installed_schema(path: Path = DB_PATH) -> int | None:
+    """Schema of the built dictionary, None if missing or unreadable. 1.0 builds had no
+    schema row and are schema 1."""
+    if not path.exists():
+        return None
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            row = con.execute("SELECT value FROM meta WHERE key='schema'").fetchone()
+        finally:
+            con.close()
+        return int(row[0]) if row else 1
+    except (sqlite3.Error, ValueError):
+        return None
 
 
 def kata_to_hira(s: str) -> str:
@@ -21,13 +43,23 @@ def has_kanji(s: str) -> bool:
 
 class Dictionary:
     def __init__(self, path: Path = DB_PATH):
-        if not path.exists():
-            raise FileNotFoundError(f"{path} missing. Run: python scripts/build_dict.py")
+        schema = installed_schema(path)
+        if schema is None:
+            raise DictionaryError("The dictionary (data\\zengo.db) is missing or damaged.\n\n"
+                                  "Run setup.bat in the Zengo folder to build it.")
+        if schema < DICT_SCHEMA:
+            raise DictionaryError("This version of Zengo needs a newer dictionary.\n\n"
+                                  "Run update.bat (or setup.bat) in the Zengo folder to rebuild it.")
         self._path = path
         self._local = threading.local()
         self.tags: dict[str, str] = json.loads(
             self._con().execute("SELECT value FROM meta WHERE key='tags'").fetchone()[0]
         )
+
+    @property
+    def version(self) -> str:
+        row = self._con().execute("SELECT value FROM meta WHERE key='jmdict_version'").fetchone()
+        return row[0] if row else ""
 
     def _con(self) -> sqlite3.Connection:
         con = getattr(self._local, "con", None)

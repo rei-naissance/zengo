@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import json
+import subprocess
 import sys
 import threading
 import time
@@ -11,18 +12,24 @@ from pathlib import Path
 import webview
 from dotenv import load_dotenv
 
-from . import win
+from . import __version__, instance, win
 from .ai import AIError, OllamaClient, explain_messages
 from .analyze import Analyzer, is_japanese, ruby
-from .dictionary import Dictionary
+from .dictionary import Dictionary, DictionaryError
 from .hotkey import DoubleCopyListener
-from .store import Config, UserData
+from .store import Config, NewerDataError, UserData
 from .translate import Translator
 
 ROOT = Path(__file__).resolve().parent.parent
 UI = Path(__file__).resolve().parent / "ui"
 POPUP_TITLE = "Zengo Popup"
 MAX_CHARS = 3000
+NO_WINDOW = subprocess.CREATE_NO_WINDOW
+
+
+def _git(*args: str, timeout: float = 30) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=timeout, creationflags=NO_WINDOW)
 
 
 class Api:
@@ -51,6 +58,9 @@ class Api:
             r["analysis"] = a.analyzer.analyze(r["text"])
         if record and a.config["history_enabled"]:
             a.user.add_history(text, r["text"], r["source"] == "JA")
+        if not r.get("cached") and a.main is not None:
+            # let the main window's quota display catch up with popup translations
+            threading.Thread(target=a.broadcast, args=("window.zengo?.onUsageChanged?.()",), daemon=True).start()
         return r
 
     # ---- AI ---------------------------------------------------------------
@@ -130,11 +140,48 @@ class Api:
         self._app.broadcast(f"zengo.onConfig({json.dumps(self.settings_get())})")
         return self.settings_get()
 
-    def deepl_usage(self):
+    def deepl_usage(self, fresh: bool = False):
         try:
-            return self._app.translator.usage()
+            return self._app.translator.usage(max_age=0 if fresh else 20)
         except Exception as e:
             return {"error": str(e)}
+
+    # ---- version / updates ------------------------------------------------------
+    def app_info(self):
+        a = self._app
+        notice, a.updated_from = a.updated_from, None  # "updated" toast shows once
+        return {"version": __version__, "dict_date": a.dictionary.version, "folder": str(ROOT),
+                "git": (ROOT / ".git").exists(), "updated_from": notice}
+
+    def update_check(self):
+        """git fetch, then list the commits this copy is behind. Read-only."""
+        if not (ROOT / ".git").exists():
+            return {"error": "This copy wasn't installed with git, so it can't update itself. "
+                             "Download the new version and run setup.bat in it."}
+        try:
+            f = _git("fetch", "--quiet", timeout=45)
+            if f.returncode:
+                last = (f.stderr.strip().splitlines() or ["unknown error"])[-1]
+                return {"error": f"Couldn't check for updates: {last}"}
+            if _git("rev-parse", "--abbrev-ref", "@{u}").returncode:
+                return {"error": "This branch doesn't track a remote branch, so there's nothing to compare."}
+            changes = [l for l in _git("log", "--format=%s", "HEAD..@{u}").stdout.splitlines() if l]
+            ahead = _git("rev-list", "--count", "@{u}..HEAD").stdout.strip()
+            dirty = bool(_git("status", "--porcelain", "--untracked-files=no").stdout.strip())
+            return {"behind": len(changes), "changes": changes[:12], "ahead": int(ahead or 0), "dirty": dirty}
+        except FileNotFoundError:
+            return {"error": "Git isn't installed (or isn't on PATH), so Zengo can't check for updates."}
+        except subprocess.TimeoutExpired:
+            return {"error": "Checking for updates timed out. Try again later."}
+
+    def update_apply(self):
+        """Run update.bat in its own console. It closes this app, updates, and restarts it."""
+        script = ROOT / "update.bat"
+        if not script.exists():
+            return {"error": "update.bat is missing from the Zengo folder."}
+        subprocess.Popen(["cmd", "/c", str(script), "--restart"], cwd=ROOT,
+                         creationflags=subprocess.CREATE_NEW_CONSOLE)
+        return {"ok": True}
 
     def ollama_models(self):
         try:
@@ -177,6 +224,15 @@ class App:
         self.popup_visible = False
         self.popup_shown_at = 0.0
         self.quitting = False
+        self.instance: instance.InstanceServer | None = None
+        last = self.config["last_version"]
+        self.updated_from = last if last and last != __version__ else None
+        if last != __version__:
+            self.config.update({"last_version": __version__})
+        try:
+            win.repair_autostart()
+        except OSError:
+            pass
         self._popup_hwnd = 0
         self._popup_loaded = threading.Event()
 
@@ -362,6 +418,8 @@ class App:
 
     def quit(self):
         self.quitting = True
+        if self.instance:
+            self.instance.close()
         self.hotkey.stop()
         self.tray.stop()
         for w in (self.popup, self.main):
@@ -373,9 +431,39 @@ class App:
                 pass
 
 
+def _hand_off() -> bool:
+    """Deal with a copy that's already running. True = carry on starting, False = exit."""
+    replace = "--replace" in sys.argv or "--demo" in sys.argv
+    running = instance.contact({"cmd": "ping"})
+    if not running:
+        return True
+    same = running.get("version") == __version__ and running.get("root") == str(ROOT)
+    if same and not replace:
+        if "--tray" not in sys.argv:  # launched by hand: bring the running one forward
+            instance.contact({"cmd": "show"})
+        return False
+    # A different version (or a copy in another folder) is running: the newer launch wins.
+    instance.contact({"cmd": "quit"})
+    if not win.wait_process_exit(int(running["pid"]), 15):
+        win.message_box(f"Zengo {running.get('version', '')} is still running and didn't close.\n\n"
+                        "Quit it from its tray icon, then start Zengo again.")
+        return False
+    return True
+
+
 def main():
     load_dotenv(ROOT / ".env")
-    app = App(start_hidden="--tray" in sys.argv)
+    if not _hand_off():
+        return
+    try:
+        app = App(start_hidden="--tray" in sys.argv)
+    except (DictionaryError, NewerDataError) as e:
+        win.message_box(str(e))
+        return
+    app.instance = instance.InstanceServer(__version__, ROOT, {
+        "show": lambda m: app.show_main(),
+        "quit": lambda m: app.quit(),
+    })
     if "--demo" in sys.argv:
         import os
         text = os.getenv("ZENGO_DEMO_TEXT", "昨日、友達に日本語の本を読ませられたんですけど、全然分からなかった。")

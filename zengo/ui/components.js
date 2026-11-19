@@ -322,8 +322,9 @@ class AiPanel {
 // ---- the full result (sentence, translation, breakdown, AI) --------------
 const Config = {};
 class ResultView {
-  constructor(root, { win, compact, showSourceForLatin = true, onNeedsKey }) {
+  constructor(root, { win, compact, showSourceForLatin = true, onNeedsKey, onTranslated }) {
     this.win = win;
+    this.onTranslated = onTranslated;
     this.compact = compact;
     this.showSourceForLatin = showSourceForLatin;
     this.onNeedsKey = onNeedsKey;
@@ -344,6 +345,11 @@ class ResultView {
     };
     this.els.source = this.els.srcWrap.lastChild;
     this.els.trans = this.els.trWrap.lastChild;
+    // Long originals collapse so the translation stays in view; "Show more" expands them.
+    this.els.more = h("button", { class: "clamp-toggle hidden", "aria-expanded": "false", onclick: () => this.toggleSource() });
+    this.els.srcWrap.append(this.els.more);
+    this.expanded = false;
+    new ResizeObserver(() => this.measureSource()).observe(this.els.source);
     this.tabBtns = {
       words: h("button", { class: "tab on", onclick: () => this.showTab("words") }, "Words", h("span", { class: "n" })),
       kanji: h("button", { class: "tab", onclick: () => this.showTab("kanji") }, "Kanji", h("span", { class: "n" })),
@@ -361,6 +367,26 @@ class ResultView {
     this.els.kanji.classList.toggle("hidden", name !== "kanji");
     this.els.aiTab.classList.toggle("hidden", name !== "ai");
     if (name === "ai" && !this.ai.started && Config.has_ollama) this.ai.start();
+  }
+
+  // Collapse threshold in px: about 3 lines of furigana text in the popup, 4 in the main window.
+  get clampLimit() { return this.compact ? 140 : 190; }
+
+  measureSource() {
+    const s = this.els.source;
+    // Only collapse when it saves real space, so a text one line over the limit isn't hidden.
+    const long = s.scrollHeight > this.clampLimit + 40;
+    s.classList.toggle("clamped", long && !this.expanded);
+    s.style.setProperty("--clamp", this.clampLimit + "px");
+    this.els.more.classList.toggle("hidden", !long);
+    this.els.more.textContent = this.expanded ? "Show less" : "Show full text";
+    this.els.more.setAttribute("aria-expanded", String(this.expanded));
+  }
+
+  toggleSource() {
+    this.expanded = !this.expanded;
+    this.measureSource();
+    if (!this.expanded) this.els.srcWrap.scrollIntoView({ block: "nearest", behavior: reduceMotion() ? "auto" : "smooth" });
   }
 
   focusCard(i) {
@@ -406,6 +432,8 @@ class ResultView {
     this.els.srcWrap.classList.toggle("hidden", !ja && !this.showSourceForLatin);
     this.els.source.className = "source" + (ja ? "" : " latin");
     this.els.source.replaceChildren(...(analysis ? this.sentence(analysis.words) : [document.createTextNode(text)]));
+    this.expanded = false;
+    this.measureSource();
     this.els.trans.className = "translation" + (ja ? "" : " jp");
     this.els.notes.replaceChildren();
     if (analysis) this.renderBreakdown(analysis, text);
@@ -442,6 +470,7 @@ class ResultView {
     } else {
       tr.replaceChildren(r.text, copyButton(() => r.text));
     }
+    if (!r.cached) this.onTranslated?.(r);
     if (Config.auto_explain && this.compact && Config.has_ollama) this.showTab("ai");
   }
 }

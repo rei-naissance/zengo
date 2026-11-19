@@ -21,6 +21,8 @@ nav { background: var(--rail); color: var(--rail-ink); display: flex; flex-direc
 .hint .row { display: flex; align-items: center; gap: 7px; }
 .dot { width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid var(--rail-ink); flex: none; }
 .dot.ok { background: var(--ok); border-color: var(--ok); }
+.quota { margin-left: auto; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.quota.warn { color: var(--accent); }
 
 .view { overflow-y: auto; height: 100vh; }
 .wrap { max-width: 1080px; margin: 0 auto; padding: 24px 32px 48px; }
@@ -89,6 +91,13 @@ table.saved { width: 100%; border-collapse: collapse; }
 .switch input:checked + span { background: var(--accent); }
 .switch input:checked + span::before { transform: translateX(16px); }
 .switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.usage { max-width: 420px; display: grid; gap: 4px; }
+.meter { height: 8px; border-radius: 8px; background: var(--sunk); overflow: hidden; }
+.meter span { display: block; height: 100%; width: 0; background: var(--ok); border-radius: 8px; transition: width .3s ease-out; }
+.meter.warn span { background: var(--infl); }
+.meter.full span { background: var(--accent); }
+.changes { margin: 4px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
+.changes li { margin: 2px 0; }
 .savebar { display: flex; gap: 10px; align-items: center; justify-content: flex-end; }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s ease-out; pointer-events: none; box-shadow: var(--shadow); }
 .toast.show { opacity: 1; }
@@ -104,7 +113,7 @@ table.saved { width: 100%; border-collapse: collapse; }
   <button class="nav" data-view="settings"><span data-i="gear"></span><span class="t">Settings</span></button>
   <div class="hint">
     <div>Select text anywhere, then <kbd>Ctrl</kbd>+<kbd>C</kbd> <kbd>C</kbd></div>
-    <div class="row"><span class="dot" id="dotDeepl"></span>DeepL</div>
+    <div class="row"><span class="dot" id="dotDeepl"></span>DeepL<span class="quota" id="railUsage"></span></div>
     <div class="row"><span class="dot" id="dotAi"></span>Ollama AI</div>
   </div>
 </nav>
@@ -156,7 +165,10 @@ table.saved { width: 100%; border-collapse: collapse; }
     <div class="section">
       <h2>Translation · DeepL</h2>
       <div class="field"><div class="lbl"><b>DeepL API key</b><span>Free keys end in :fx</span></div>
-        <div class="row"><input type="password" id="deepl_key" placeholder="Paste your key"><button class="btn" id="testDeepl">Test</button><span class="status" id="deeplStatus"></span></div></div>
+        <div class="row"><input type="password" id="deepl_key" placeholder="Paste your key"><button class="btn" id="testDeepl" title="Save the key and check it">Check</button><span class="status" id="deeplStatus"></span></div></div>
+      <div class="field hidden" id="usageField"><div class="lbl"><b>Usage this month</b><span id="usagePlan">Updates automatically</span></div>
+        <div class="usage"><div class="meter" role="meter" aria-label="DeepL characters used this month" id="usageMeter"><span id="usageBar"></span></div>
+          <div class="row"><span class="status" id="usageText"></span><span class="spacer"></span><button class="ibtn" id="refreshUsage" title="Refresh usage" aria-label="Refresh usage"></button></div></div></div>
       <div class="field"><div class="lbl"><b>English variant</b></div>
         <div><select id="en_variant"><option value="EN-US">American English</option><option value="EN-GB">British English</option></select></div></div>
       <div class="field"><div class="lbl"><b>Japanese politeness</b><span>For English → Japanese</span></div>
@@ -165,7 +177,7 @@ table.saved { width: 100%; border-collapse: collapse; }
     <div class="section">
       <h2>AI explanations · Ollama Cloud</h2>
       <div class="field"><div class="lbl"><b>Ollama API key</b><span>From ollama.com → Settings → Keys</span></div>
-        <div class="row"><input type="password" id="ollama_key" placeholder="Paste your key"><button class="btn" id="testAi">Test</button><span class="status" id="aiStatus"></span></div></div>
+        <div class="row"><input type="password" id="ollama_key" placeholder="Paste your key"><button class="btn" id="testAi" title="Save the key and check it">Check</button><span class="status" id="aiStatus"></span></div></div>
       <div class="field"><div class="lbl"><b>Model</b><span>Models named “flash” answer fastest</span></div>
         <div class="row"><select id="ollama_model" style="max-width:300px"></select><button class="ibtn" id="refreshModels" title="Reload model list" aria-label="Reload model list"></button></div></div>
       <div class="field"><div class="lbl"><b>Auto-explain in popup</b><span>Run AI as soon as the popup opens</span></div>
@@ -183,6 +195,16 @@ table.saved { width: 100%; border-collapse: collapse; }
         <div><label class="switch"><input type="checkbox" id="history_enabled"><span></span></label></div></div>
       <div class="field"><div class="lbl"><b>Theme</b></div>
         <div><select id="theme" style="max-width:200px"><option value="system">Match Windows</option><option value="light">Light</option><option value="dark">Dark</option></select></div></div>
+    </div>
+    <div class="section">
+      <h2>About &amp; updates</h2>
+      <div class="field"><div class="lbl"><b>Version</b><span id="aboutFolder"></span></div>
+        <div class="row"><span id="aboutVersion"></span><span class="status" id="aboutDict"></span></div></div>
+      <div class="field"><div class="lbl"><b>Updates</b><span>Checked when you open Settings</span></div>
+        <div class="usage">
+          <div class="row"><button class="btn" id="checkUpdate">Check for updates</button><button class="btn primary hidden" id="applyUpdate">Update and restart</button><span class="status" id="updateStatus"></span></div>
+          <ul class="changes hidden" id="updateChanges"></ul>
+        </div></div>
     </div>
     <div class="savebar"><span class="status" id="saveStatus"></span><button class="btn primary" id="saveSettings">Save settings</button></div>
   </div>

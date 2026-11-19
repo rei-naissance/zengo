@@ -19,6 +19,10 @@ kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
 user32.FindWindowW.restype = wintypes.HWND
 user32.MonitorFromPoint.restype = wintypes.HMONITOR
 user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+kernel32.OpenProcess.restype = wintypes.HANDLE
+kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
 CF_UNICODETEXT = 13
 
@@ -110,6 +114,23 @@ def system_dark_mode() -> bool:
         return False
 
 
+def wait_process_exit(pid: int, timeout: float) -> bool:
+    """True once the process is gone (or never existed), False on timeout."""
+    SYNCHRONIZE = 0x00100000
+    h = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+    if not h:
+        return True
+    try:
+        return kernel32.WaitForSingleObject(h, int(timeout * 1000)) == 0  # WAIT_OBJECT_0
+    finally:
+        kernel32.CloseHandle(h)
+
+
+def message_box(text: str, title: str = "Zengo", error: bool = True) -> None:
+    """Visible even under pythonw, where a traceback would vanish silently."""
+    user32.MessageBoxW(None, text, title, 0x10 if error else 0x40)  # MB_ICONERROR / MB_ICONINFORMATION
+
+
 _RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
@@ -118,6 +139,28 @@ def _launch_command() -> str:
     pythonw = exe.with_name("pythonw.exe") if exe.name.lower() == "python.exe" else exe
     script = Path(__file__).resolve().parent.parent / "zengo.pyw"
     return f'"{pythonw}" "{script}" --tray'
+
+
+def _registered_command() -> str | None:
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY) as k:
+            return winreg.QueryValueEx(k, "Zengo")[0]
+    except OSError:
+        return None
+
+
+def repair_autostart() -> bool:
+    """If "Start with Windows" points at a copy of Zengo that no longer exists (folder moved,
+    reinstalled elsewhere, old venv deleted), point it at this one. Returns True if changed."""
+    cmd = _registered_command()
+    if not cmd or cmd == _launch_command():
+        return False
+    paths = [p for p in cmd.split('"') if p.strip() and not p.strip().startswith("--")]
+    if paths and all(Path(p).exists() for p in paths):
+        return False  # another valid install owns it; leave it alone
+    set_autostart(True)
+    return True
 
 
 def get_autostart() -> bool:

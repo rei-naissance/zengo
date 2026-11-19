@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sqlite3
 import sys
 import urllib.request
@@ -14,6 +15,9 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from zengo import DICT_SCHEMA  # noqa: E402  (zengo/__init__.py is import-light)
+
 RAW = ROOT / "data" / "raw"
 DB = ROOT / "data" / "zengo.db"
 API = "https://api.github.com/repos/scriptin/jmdict-simplified/releases/latest"
@@ -54,9 +58,11 @@ def download_assets(force: bool) -> tuple[Path, Path]:
 
 
 def build(jmdict_path: Path, kanjidic_path: Path) -> None:
-    if DB.exists():
-        DB.unlink()
-    con = sqlite3.connect(DB)
+    # Build next to the real file and swap it in at the end, so a failed or interrupted build
+    # never leaves Zengo without a dictionary.
+    tmp = DB.with_suffix(".db.building")
+    tmp.unlink(missing_ok=True)
+    con = sqlite3.connect(tmp)
     con.executescript(
         """
         CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
@@ -70,6 +76,7 @@ def build(jmdict_path: Path, kanjidic_path: Path) -> None:
     jm = json.loads(jmdict_path.read_text(encoding="utf-8"))
     con.execute("INSERT INTO meta VALUES('tags', ?)", (json.dumps(jm["tags"], ensure_ascii=False),))
     con.execute("INSERT INTO meta VALUES('jmdict_version', ?)", (jm.get("dictDate", ""),))
+    con.execute("INSERT INTO meta VALUES('schema', ?)", (str(DICT_SCHEMA),))
     entries, forms = [], []
     for w in jm["words"]:
         eid = int(w["id"])
@@ -129,6 +136,10 @@ def build(jmdict_path: Path, kanjidic_path: Path) -> None:
     con.commit()
     con.execute("VACUUM")
     con.close()
+    try:
+        os.replace(tmp, DB)
+    except PermissionError:
+        sys.exit(f"{DB} is in use. Quit Zengo (tray icon -> Quit) and run this again.")
     print("Built", DB, f"({DB.stat().st_size / 1e6:.1f} MB)")
 
 

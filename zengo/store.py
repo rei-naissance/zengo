@@ -25,6 +25,7 @@ DEFAULTS = {
     "auto_explain": False,          # run the AI explanation automatically in the popup
     "theme": "system",              # system | light | dark
     "history_enabled": True,
+    "last_version": "",             # version that last ran; tells us when an update happened
 }
 
 
@@ -37,7 +38,8 @@ class Config:
             try:
                 self.data.update(json.loads(path.read_text(encoding="utf-8")))
             except ValueError:
-                pass
+                # Keep the unreadable file (your keys may be recoverable) instead of overwriting it.
+                path.replace(path.with_name(f"config.broken-{int(time.time())}.json"))
         # keys missing from Settings fall back to the project .env
         changed = not path.exists()
         for k, env in (("deepl_key", "DEEPL_API_KEY"), ("ollama_key", "OLLAMA_API_KEY")):
@@ -58,8 +60,29 @@ class Config:
             self.save()
 
     def save(self) -> None:
+        # Write-then-rename so a crash or a second copy of the app never leaves half a file.
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, self.path)
+
+
+# user.db migrations: index i upgrades schema version i -> i+1. Append only; never edit a
+# released step. Each runs in one transaction, and the version is bumped with it.
+MIGRATIONS: list[str] = [
+    # 0 -> 1: the original tables (no-op for databases created by 1.0, which already have them)
+    """
+    CREATE TABLE IF NOT EXISTS history(
+        id INTEGER PRIMARY KEY, text TEXT UNIQUE, translation TEXT, ja INTEGER, ts REAL);
+    CREATE TABLE IF NOT EXISTS saved(
+        id INTEGER PRIMARY KEY, word TEXT UNIQUE, reading TEXT, base TEXT,
+        meaning TEXT, pos TEXT, sentence TEXT, segs TEXT, ts REAL);
+    """,
+]
+
+
+class NewerDataError(RuntimeError):
+    pass
 
 
 class UserData:
@@ -67,13 +90,21 @@ class UserData:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._con = sqlite3.connect(path, check_same_thread=False)
         self._lock = threading.Lock()
-        self._con.executescript("""
-            CREATE TABLE IF NOT EXISTS history(
-                id INTEGER PRIMARY KEY, text TEXT UNIQUE, translation TEXT, ja INTEGER, ts REAL);
-            CREATE TABLE IF NOT EXISTS saved(
-                id INTEGER PRIMARY KEY, word TEXT UNIQUE, reading TEXT, base TEXT,
-                meaning TEXT, pos TEXT, sentence TEXT, segs TEXT, ts REAL);
-        """)
+        self._migrate(path)
+
+    def _migrate(self, path: Path) -> None:
+        ver = self._con.execute("PRAGMA user_version").fetchone()[0]
+        if ver > len(MIGRATIONS):
+            # An older Zengo opening data from a newer one: don't touch it.
+            raise NewerDataError(
+                f"{path} was created by a newer version of Zengo (data version {ver}). "
+                "Update Zengo (update.bat) to open it.")
+        if ver < len(MIGRATIONS) and path.exists() and path.stat().st_size:
+            backup = path.with_name(f"user.backup-v{ver}.db")
+            backup.unlink(missing_ok=True)
+            self._con.execute("VACUUM INTO ?", (str(backup),))  # safety copy before changing it
+        for i in range(ver, len(MIGRATIONS)):
+            self._con.executescript(f"BEGIN; {MIGRATIONS[i]}; PRAGMA user_version = {i + 1}; COMMIT;")
 
     def _q(self, sql: str, args=()) -> list[dict]:
         with self._lock:

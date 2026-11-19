@@ -37,9 +37,33 @@ Manual equivalent:
 
 ```bash
 python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python scripts\build_dict.py
+.venv\Scripts\python scripts\sync_env.py --always-install
 ```
+
+## Updating
+
+Run `update.bat`, or **Settings → About & updates → Update and restart** (Settings checks for
+new versions when you open it). Either way Zengo:
+
+1. closes the running copy (so no files are in use),
+2. runs `git pull --ff-only` (local edits are kept; if they clash, nothing changes),
+3. runs `scripts\sync_env.py`, which reinstalls packages only if `requirements.txt` changed and
+   rebuilds the dictionary only if its format changed,
+4. starts Zengo again and shows what changed.
+
+If step 3 fails, it goes back to the version you had (`git reset --keep`) and syncs that.
+`setup.bat` is safe to re-run any time as a repair.
+
+**Running more than one version.** Only one Zengo runs at a time. Starting it again brings the
+open window forward; starting a *different* version (or a copy in another folder) closes the
+running one and takes over, so you never get two tray icons fighting over Ctrl+C. Use
+`--replace` to force a takeover and `python -m zengo --quit` to close the running copy.
+If "Start with Windows" points at a copy that no longer exists, the next copy you start fixes it.
+
+**Your data across versions.** `config.json` is written atomically, and an unreadable one is set
+aside as `config.broken-*.json` instead of being overwritten. `user.db` carries a schema version:
+before an upgrade migrates it, a copy is saved as `user.backup-v<N>.db`, and an older Zengo
+refuses to open data from a newer one rather than damaging it. See [CHANGELOG.md](CHANGELOG.md).
 
 ## What stays on your machine
 
@@ -63,12 +87,14 @@ Closing the main window keeps Zengo in the tray; quit from the tray menu.
 | Kanji | KANJIDIC2 via jmdict-simplified | CC BY-SA 4.0 (EDRDG) |
 | Tokenizing / readings | MeCab (fugashi) + UniDic-lite | BSD |
 
-Re-run `scripts\build_dict.py --force` to update the dictionaries.
+Re-run `scripts\build_dict.py --force` to update the dictionaries (quit Zengo first; the new
+file is swapped in only once the build succeeds).
 
 ## Layout
 
 ```
-zengo/app.py           pywebview windows (main + popup), tray, JS API, AI streaming
+zengo/app.py           pywebview windows (main + popup), tray, JS API, AI streaming, updates
+zengo/instance.py      single running instance + version hand-off
 zengo/ai.py            Ollama Cloud client + tutor prompts
 zengo/store.py         settings (config.json) + history / saved words (user.db) in %APPDATA%\Zengo
 zengo/win.py           Win32 helpers: clipboard, cursor, focus, rounded corners, autostart
@@ -78,6 +104,7 @@ zengo/analyze.py       tokenizing, compound merging, conjugation grouping, furig
 zengo/dictionary.py    SQLite lookups into JMdict / KANJIDIC2
 zengo/grammar_data.py  hand-written particle / auxiliary / helper-verb notes (edit freely)
 zengo/ui/              index.html + main.js (main window), popup.html, components.js, zengo.css
+scripts/sync_env.py    makes .venv and data/ match the checkout (used by setup.bat / update.bat)
 ```
 
 The UI runs on Windows' built-in WebView2, so no browser is bundled. The main window is only

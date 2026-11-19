@@ -16,16 +16,12 @@ if not exist ".venv\Scripts\python.exe" (
   echo Creating virtual environment...
   %PY% -m venv .venv || goto :fail
 )
-echo Installing dependencies...
-".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -q -r requirements.txt || goto :fail
-
-if not exist "data\zengo.db" (
-  echo Downloading dictionaries ^(JMdict + KANJIDIC2, about 13 MB^)...
-  ".venv\Scripts\python.exe" scripts\build_dict.py || goto :fail
-)
+rem Installs dependencies and builds (or upgrades) the dictionary. Safe to re-run as a repair.
+".venv\Scripts\python.exe" scripts\sync_env.py --always-install || goto :fail
 
 echo.
 echo Done. Start Zengo with start-zengo.bat, then add your API keys in Settings.
+echo Later, run update.bat (or Settings, About) to update.
 pause
 exit /b 0
 

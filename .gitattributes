@@ -1,0 +1,2 @@
+# Batch files break in odd ways with LF endings (labels, goto); keep them CRLF everywhere.
+*.bat text eol=crlf
